@@ -23,8 +23,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas gspread google-auth openpyxl oauth2client
 
-      - name: Save service account JSON
-        run: echo "${{ secrets.SERVICE_ACCOUNT_JSON }}" > service_account.json
+      # ✅ Decode and save your Google service account JSON from base64
+      - name: Decode and save service account JSON
+        run: |
+          echo "${{ secrets.SERVICE_ACCOUNT_BASE64 }}" | base64 --decode > service_account.json
 
       - name: Set environment variables
         run: |
