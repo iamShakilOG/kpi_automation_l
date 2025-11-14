@@ -33,4 +33,4 @@ jobs:
           echo "SHEET_ID_REPORT=${{ secrets.SHEET_ID_REPORT }}" >> $GITHUB_ENV
 
       - name: Run Lead KPI Script
-        run: python lead_kpi_script.py
+        run: python Lead_KPI_Automation_V1.py
