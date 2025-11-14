@@ -236,5 +236,7 @@ for sheet_name, df in sheet_data.items():
     except gspread.exceptions.WorksheetNotFound:
         pass
     ws_new = spreadsheet_report.add_worksheet(title=sheet_name, rows=len(df)+50, cols=len(df.columns)+5)
+    df = df.replace([np.inf, -np.inf, np.nan], "").fillna("")
     ws_new.update([df.columns.values.tolist()] + df.values.tolist())
+
     print(f"✅ Uploaded tab: {sheet_name} to Report Sheet")
