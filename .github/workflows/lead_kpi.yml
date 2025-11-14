@@ -2,8 +2,9 @@ name: Lead KPI Automation
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Daily 6:00 AM UTC
-  workflow_dispatch:      # Manual trigger
+    - cron: '0 * * * *'   # ⏰ Every hour, on the hour (UTC)
+  workflow_dispatch:        # Allow manual trigger from the Actions tab
+
 
 jobs:
   run-lead-kpi:
