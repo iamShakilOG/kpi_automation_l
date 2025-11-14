@@ -1,6 +1,6 @@
 # ============================================================
-# Lead KPI Automation Script (with Attendance, Training & Project Count)
-# For GitHub Actions Automation
+# Lead KPI Calculation Script (with Attendance & Training + Project Count)
+# GitHub Actions Compatible — identical output to local version
 # ============================================================
 
 import pandas as pd
@@ -8,17 +8,18 @@ import numpy as np
 import re
 import gspread
 from google.oauth2.service_account import Credentials
+from pandas import ExcelWriter
+from datetime import datetime
 import os
 
-# ==== 1️⃣ Read environment variables ====
+# ==== 1) Connect to Google Sheets using Secrets ====
 SHEET_ID_LEAD = os.getenv("SHEET_ID_LEAD")
 SHEET_ID_PDR = os.getenv("SHEET_ID_PDR")
 SHEET_ID_REPORT = os.getenv("SHEET_ID_REPORT")
 
 if not SHEET_ID_LEAD or not SHEET_ID_PDR or not SHEET_ID_REPORT:
-    raise ValueError("❌ Missing required Sheet IDs in environment variables.")
+    raise ValueError("❌ Missing required Sheet IDs in environment variables!")
 
-# ==== 2️⃣ Connect to Google Sheets using Service Account ====
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -26,40 +27,29 @@ scope = [
 creds = Credentials.from_service_account_file("service_account.json", scopes=scope)
 client = gspread.authorize(creds)
 
-# ==== 3️⃣ Load Sheets ====
+# ==== 2) Load Lead KPI Sheet (MASTER) ====
 spreadsheet_lead = client.open_by_key(SHEET_ID_LEAD)
-spreadsheet_pdr = client.open_by_key(SHEET_ID_PDR)
-spreadsheet_report = client.open_by_key(SHEET_ID_REPORT)
-
-# Lead KPI Sheet
 ws_lead = spreadsheet_lead.worksheet("Lead")
-lead_data = ws_lead.get("B:J")
+lead_data = ws_lead.get("B:J")  # B–J: Lead → Discipline & Punctuality
 lead_df = pd.DataFrame(lead_data[1:], columns=lead_data[0])
 lead_df.columns = lead_df.columns.str.strip()
 
-# Attendance Sheet
-ws_att = spreadsheet_lead.worksheet("Attendance")
-att_data = ws_att.get_all_records()
-attendance_df = pd.DataFrame(att_data)
-attendance_df.columns = attendance_df.columns.str.strip()
-
-# Project Hours Sheet
+# ==== 3) Load Project Hours + PDR Sheet ====
+spreadsheet_pdr = client.open_by_key(SHEET_ID_PDR)
 ws_pdr = spreadsheet_pdr.worksheet("Project_Hours")
 pdr_data = ws_pdr.get_all_records()
 pdr_df = pd.DataFrame(pdr_data)
 pdr_df.columns = pdr_df.columns.str.strip()
 
-# ==== Helper Functions ====
-def clean_for_gsheet(df):
-    """Clean DataFrame for safe upload to Google Sheets (remove NaN, inf)."""
-    return (
-        df.replace([np.inf, -np.inf, np.nan], "")
-          .fillna("")
-          .astype(str)
-    )
+# ==== 4) Load Attendance Sheet (from MASTER) ====
+ws_att = spreadsheet_lead.worksheet("Attendance")
+att_data = ws_att.get_all_records()
+attendance_df = pd.DataFrame(att_data)
+attendance_df.columns = attendance_df.columns.str.strip()
 
+# ---- Helpers ----
 def clean_qai_id(x):
-    if pd.isna(x):
+    if pd.isna(x): 
         return None
     x = str(x).upper().strip().replace(" ", "_")
     x = re.sub(r"_+", "_", x)
@@ -82,18 +72,26 @@ def normalize_month(value):
             return full
     return value.capitalize()
 
-# ==== 4️⃣ Clean & Normalize Data ====
+def clean_for_gsheet(df):
+    """Clean invalid JSON/float values before upload"""
+    return df.replace([np.inf, -np.inf, np.nan], "").fillna("").astype(str)
+
+# ==== 5) Normalize/rename columns ====
 pdr_df = pdr_df.rename(columns={
     "Project Batch": "Project name",
     "SUM of Effective Work Hour": "Project Hour"
 })
 
+# Attendance sheet: handle Attendance Score or Score
+att_colmap = {}
 if "QAI_ID" not in attendance_df.columns and "ID" in attendance_df.columns:
-    attendance_df = attendance_df.rename(columns={"ID": "QAI_ID"})
+    att_colmap["ID"] = "QAI_ID"
+attendance_df = attendance_df.rename(columns=att_colmap)
 
-# Attendance numeric cleanup
+# ---- Attendance numeric handling ----
 if "Attendance Score" in attendance_df.columns:
-    attendance_df["Score"] = to_num(attendance_df["Attendance Score"]).fillna(0)
+    attendance_df["Attendance Score"] = to_num(attendance_df["Attendance Score"]).fillna(0)
+    attendance_df["Score"] = attendance_df["Attendance Score"]  # unify naming
 elif "Score" in attendance_df.columns:
     attendance_df["Score"] = to_num(attendance_df["Score"]).fillna(0)
 else:
@@ -106,12 +104,7 @@ if "Training and assessment performance" in attendance_df.columns:
 else:
     attendance_df["Training and assessment performance"] = 0
 
-lead_df["QAI_ID"] = lead_df["QAI_ID"].apply(clean_qai_id)
-attendance_df["QAI_ID"] = attendance_df["QAI_ID"].apply(clean_qai_id)
-
-lead_df["Month"] = lead_df["Month"].apply(normalize_month)
-attendance_df["Month"] = attendance_df["Month"].apply(normalize_month)
-
+# ==== 6) Ensure numeric columns in Lead + PDR ====
 lead_num_cols = [
     "Quality Score (RCA)",
     "Project Delivery Timeliness",
@@ -119,11 +112,23 @@ lead_num_cols = [
     "Communication Efficiency",
     "Discipline & Punctuality",
 ]
+
+if "Communication Efficiency " in lead_df.columns and "Communication Efficiency" not in lead_df.columns:
+    lead_df = lead_df.rename(columns={"Communication Efficiency ": "Communication Efficiency"})
+
 lead_df[lead_num_cols] = lead_df[lead_num_cols].apply(to_num).fillna(0)
 pdr_df["Project Hour"] = to_num(pdr_df.get("Project Hour", 0)).fillna(0)
 pdr_df["PDR"] = to_num(pdr_df.get("PDR", 0)).fillna(0)
 
-# ==== 5️⃣ Monthly Core KPI Metrics ====
+# ==== 7) Clean IDs and Months ====
+lead_df["QAI_ID"] = lead_df["QAI_ID"].apply(clean_qai_id)
+if "QAI_ID" in attendance_df.columns:
+    attendance_df["QAI_ID"] = attendance_df["QAI_ID"].apply(clean_qai_id)
+
+lead_df["Month"] = lead_df["Month"].apply(normalize_month)
+attendance_df["Month"] = attendance_df["Month"].apply(normalize_month)
+
+# ==== 8) Monthly KPI Averages ====
 monthly_core = (
     lead_df.groupby(["Month", "QAI_ID"], as_index=False)
     .agg({
@@ -137,14 +142,14 @@ monthly_core = (
     })
 )
 
-# ==== 6️⃣ Project Count ====
+# ==== 8b) Calculate Project Count per Month per QAI_ID ====
 project_count = (
     lead_df.groupby(["Month", "QAI_ID"], as_index=False)
     .agg({"Project name": lambda x: len(set(pd.Series(x).dropna()))})
     .rename(columns={"Project name": "Project Count"})
 )
 
-# ==== 7️⃣ Contributions ====
+# ==== 9–13) Contributions and Attendance Merge ====
 lead_with_hours = lead_df.merge(
     pdr_df[["Project name", "PDR", "Project Hour"]],
     on="Project name",
@@ -159,16 +164,14 @@ lead_contrib = (
     .agg({"Weighted_Contribution": "sum"})
     .rename(columns={"Weighted_Contribution": "Lead_Contribution"})
 )
-
 total_contrib = (
     lead_contrib.groupby("Month", as_index=False)
     .agg({"Lead_Contribution": "sum"})
     .rename(columns={"Lead_Contribution": "Total_Month_Contribution"})
 )
-
 lead_contrib = lead_contrib.merge(total_contrib, on="Month", how="left")
 lead_contrib["Contribution_%"] = (
-    lead_contrib["Lead_Contribution"] / lead_contrib["Total_Month_Contribution"] * 100
+    (lead_contrib["Lead_Contribution"] / lead_contrib["Total_Month_Contribution"]) * 100
 ).round(2).fillna(0)
 
 def contribution_to_rating(pct):
@@ -180,7 +183,6 @@ def contribution_to_rating(pct):
 
 lead_contrib["Contribution_Rating"] = lead_contrib["Contribution_%"].apply(contribution_to_rating)
 
-# ==== 8️⃣ Attendance Aggregate ====
 attendance_agg = (
     attendance_df.groupby(["Month", "QAI_ID"], as_index=False)
     .agg({
@@ -193,7 +195,6 @@ attendance_agg = (
     })
 )
 
-# ==== 9️⃣ Merge All Data ====
 merged = monthly_core.merge(lead_contrib, on=["Month", "QAI_ID"], how="left")
 merged = merged.merge(attendance_agg, on=["Month", "QAI_ID"], how="left")
 merged = merged.merge(project_count, on=["Month", "QAI_ID"], how="left")
@@ -203,7 +204,7 @@ for c in ["Contribution_%", "Contribution_Rating", "Attendance", "Training and a
         merged[c] = 0
     merged[c] = to_num(merged[c]).fillna(0)
 
-# ==== 🔟 Weighted KPI Scoring ====
+# ==== 14) Weighted Scoring ====
 merged["Score_Quality"]       = 0.20  * merged["Quality Score (RCA)"]
 merged["Score_Timeliness"]    = 0.10  * merged["Project Delivery Timeliness"]
 merged["Score_Documentation"] = 0.10  * merged["Documentation & Reporting"]
@@ -214,36 +215,86 @@ merged["Score_Attendance"]    = 0.075 * merged["Attendance"]
 merged["Score_Training"]      = 0.20  * merged["Training and assessment performance"]
 
 merged["Final KPI Score"] = (
-    merged["Score_Quality"]
-    + merged["Score_Timeliness"]
-    + merged["Score_Documentation"]
-    + merged["Score_Communication"]
-    + merged["Score_Discipline"]
-    + merged["Score_Contribution"]
-    + merged["Score_Attendance"]
-    + merged["Score_Training"]
+    merged["Score_Quality"] +
+    merged["Score_Timeliness"] +
+    merged["Score_Documentation"] +
+    merged["Score_Communication"] +
+    merged["Score_Discipline"] +
+    merged["Score_Contribution"] +
+    merged["Score_Attendance"] +
+    merged["Score_Training"]
 ).round(2)
 
-# ==== 11️⃣ Prepare Export Data ====
-sheet_data = {
-    "01_Monthly_Core": monthly_core,
-    "02_Lead_With_Hours": lead_with_hours,
-    "03_Lead_Contribution": lead_contrib,
-    "04_Attendance_Aggregate": attendance_agg,
-    "05_Merged_Before_Scoring": merged,
-    "06_Final_Report": merged.copy()
-}
+# ==== 15) Final Report ====
+final_report = merged[[
+    "Month", "QAI_ID", "Lead", "Project name", "Project Count",
+    "Score_Quality", "Score_Timeliness", "Score_Documentation",
+    "Score_Communication", "Score_Discipline",
+    "Score_Contribution", "Score_Attendance", "Score_Training",
+    "Final KPI Score"
+]].copy()
 
-# ==== 12️⃣ Upload All Tabs to Report Sheet ====
-for sheet_name, df in sheet_data.items():
-    df = clean_for_gsheet(df)
-    try:
-        ws = spreadsheet_report.worksheet(sheet_name)
-        spreadsheet_report.del_worksheet(ws)
-    except gspread.exceptions.WorksheetNotFound:
-        pass
-    ws_new = spreadsheet_report.add_worksheet(title=sheet_name, rows=len(df)+50, cols=len(df.columns)+5)
-    ws_new.update([df.columns.values.tolist()] + df.values.tolist())
-    print(f"✅ Uploaded tab: {sheet_name} to Report Sheet")
+final_report.columns = [
+    "Month",
+    "QAI_ID",
+    "Lead",
+    "Project Name",
+    "Project Count",
+    "Quality Score (RCA) (Out of 1.00 | Weight: 20%)",
+    "Project Delivery Timeliness (Out of 0.50 | Weight: 10%)",
+    "Documentation & Reporting (Out of 0.50 | Weight: 10%)",
+    "Communication Efficiency (Out of 0.50 | Weight: 10%)",
+    "Discipline & Punctuality (Out of 0.375 | Weight: 7.5%)",
+    "Contribution Rating (Out of 0.75 | Weight: 15%)",
+    "Attendance (Out of 0.375 | Weight: 7.5%)",
+    "Training & Assessment Performance (Out of 1.00 | Weight: 20%)",
+    "Final KPI Score (Weighted Total Out of 5.00)"
+]
 
-print("✅ Lead KPI Automation completed successfully!")
+final_report = clean_for_gsheet(final_report)
+
+# ==== 15b) Export Logs to Excel ====
+timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+log_folder = f"./lead_kpi_logs_{timestamp}"
+os.makedirs(log_folder, exist_ok=True)
+log_file_path = os.path.join(log_folder, f"lead_kpi_logs_{timestamp}.xlsx")
+
+with ExcelWriter(log_file_path, engine="openpyxl") as writer:
+    monthly_core.to_excel(writer, sheet_name="01_Monthly_Core", index=False)
+    lead_with_hours.to_excel(writer, sheet_name="02_Lead_With_Hours", index=False)
+    lead_contrib.to_excel(writer, sheet_name="03_Lead_Contribution", index=False)
+    attendance_agg.to_excel(writer, sheet_name="04_Attendance_Aggregate", index=False)
+    merged.to_excel(writer, sheet_name="05_Merged_Before_Scoring", index=False)
+    final_report.to_excel(writer, sheet_name="06_Final_Report", index=False)
+
+    scoring_info = pd.DataFrame({
+        "Metric": [
+            "Quality Score (RCA)",
+            "Project Delivery Timeliness",
+            "Documentation & Reporting",
+            "Communication Efficiency",
+            "Discipline & Punctuality",
+            "Contribution Rating",
+            "Attendance",
+            "Training & Assessment Performance",
+            "TOTAL"
+        ],
+        "Weight (%)": [20, 10, 10, 10, 7.5, 15, 7.5, 20, 100],
+        "Out of (5 × Weight)": [1.00, 0.50, 0.50, 0.50, 0.375, 0.75, 0.375, 1.00, 5.00]
+    })
+    scoring_info.to_excel(writer, sheet_name="Scoring_Breakdown", index=False)
+
+print(f"✅ Excel log file created: {log_file_path}")
+
+# ==== 16) Upload to Google Sheets ====
+try:
+    ws_report = spreadsheet_lead.worksheet("Final Report_Lead")
+    spreadsheet_lead.del_worksheet(ws_report)
+except:
+    pass
+
+ws_report = spreadsheet_lead.add_worksheet(title="Final Report_Lead", rows=2000, cols=30)
+ws_report.update([final_report.columns.values.tolist()] + final_report.values.tolist())
+
+print("✅ Successfully exported: Final Report_Lead")
+print(f"✅ All detailed logs saved at: {log_folder}")
