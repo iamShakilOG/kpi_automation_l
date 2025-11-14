@@ -253,40 +253,37 @@ final_report.columns = [
 
 final_report = clean_for_gsheet(final_report)
 
-# ==== 15b) Export Logs to Excel ====
-timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-log_folder = f"./lead_kpi_logs_{timestamp}"
-os.makedirs(log_folder, exist_ok=True)
-log_file_path = os.path.join(log_folder, f"lead_kpi_logs_{timestamp}.xlsx")
+# ==== 15) Final Report (exact headers like original) ====
+final_report = merged[[
+    "Month", "QAI_ID", "Lead", "Project name", "Project Count",
+    "Score_Quality", "Score_Timeliness", "Score_Documentation",
+    "Score_Communication", "Score_Discipline",
+    "Score_Contribution", "Score_Attendance", "Score_Training",
+    "Final KPI Score"
+]].copy()
 
-with ExcelWriter(log_file_path, engine="openpyxl") as writer:
-    monthly_core.to_excel(writer, sheet_name="01_Monthly_Core", index=False)
-    lead_with_hours.to_excel(writer, sheet_name="02_Lead_With_Hours", index=False)
-    lead_contrib.to_excel(writer, sheet_name="03_Lead_Contribution", index=False)
-    attendance_agg.to_excel(writer, sheet_name="04_Attendance_Aggregate", index=False)
-    merged.to_excel(writer, sheet_name="05_Merged_Before_Scoring", index=False)
-    final_report.to_excel(writer, sheet_name="06_Final_Report", index=False)
+# rename "Project name" -> "Project Name" and map exact header labels
+final_report.columns = [
+    "Month",
+    "QAI_ID",
+    "Lead",
+    "Project Name",
+    "Project Count",
+    "Quality Score (RCA) (Out of 1.00 | Weight: 20%)",
+    "Project Delivery Timeliness (Out of 0.50 | Weight: 10%)",
+    "Documentation & Reporting (Out of 0.50 | Weight: 10%)",
+    "Communication Efficiency (Out of 0.50 | Weight: 10%)",
+    "Discipline & Punctuality (Out of 0.375 | Weight: 7.5%)",
+    "Contribution Rating (Out of 0.75 | Weight: 15%)",
+    "Attendance (Out of 0.375 | Weight: 7.5%)",
+    "Training & Assessment Performance (Out of 1.00 | Weight: 20%)",
+    "Final KPI Score (Weighted Total Out of 5.00)"
+]
 
-    scoring_info = pd.DataFrame({
-        "Metric": [
-            "Quality Score (RCA)",
-            "Project Delivery Timeliness",
-            "Documentation & Reporting",
-            "Communication Efficiency",
-            "Discipline & Punctuality",
-            "Contribution Rating",
-            "Attendance",
-            "Training & Assessment Performance",
-            "TOTAL"
-        ],
-        "Weight (%)": [20, 10, 10, 10, 7.5, 15, 7.5, 20, 100],
-        "Out of (5 × Weight)": [1.00, 0.50, 0.50, 0.50, 0.375, 0.75, 0.375, 1.00, 5.00]
-    })
-    scoring_info.to_excel(writer, sheet_name="Scoring_Breakdown", index=False)
+# clean for upload (avoid NaN/inf JSON errors)
+final_report = final_report.replace([np.nan, np.inf, -np.inf], "").fillna("")
 
-print(f"✅ Excel log file created: {log_file_path}")
-
-# ==== 16) Upload to Google Sheets ====
+# ==== 16) Upload to Google Sheets (same destination as original) ====
 try:
     ws_report = spreadsheet_lead.worksheet("Final Report_Lead")
     spreadsheet_lead.del_worksheet(ws_report)
@@ -297,4 +294,4 @@ ws_report = spreadsheet_lead.add_worksheet(title="Final Report_Lead", rows=2000,
 ws_report.update([final_report.columns.values.tolist()] + final_report.values.tolist())
 
 print("✅ Successfully exported: Final Report_Lead")
-print(f"✅ All detailed logs saved at: {log_folder}")
+
