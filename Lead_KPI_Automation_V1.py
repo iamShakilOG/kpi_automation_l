@@ -49,6 +49,15 @@ pdr_data = ws_pdr.get_all_records()
 pdr_df = pd.DataFrame(pdr_data)
 pdr_df.columns = pdr_df.columns.str.strip()
 
+
+def clean_for_gsheet(df):
+    """Ensure all values are JSON-safe for Google Sheets upload."""
+    return (
+        df.replace([np.inf, -np.inf, np.nan], "")  # remove invalid numbers
+          .fillna("")                              # fill None or NaT
+          .astype(str)                             # make all values JSON-safe strings
+    )
+
 # ==== 4) Helper Functions ====
 def clean_qai_id(x):
     if pd.isna(x):
@@ -236,7 +245,8 @@ for sheet_name, df in sheet_data.items():
     except gspread.exceptions.WorksheetNotFound:
         pass
     ws_new = spreadsheet_report.add_worksheet(title=sheet_name, rows=len(df)+50, cols=len(df.columns)+5)
-    df = df.replace([np.inf, -np.inf, np.nan], "").fillna("")
+    df = clean_for_gsheet(df)
     ws_new.update([df.columns.values.tolist()] + df.values.tolist())
+
 
     print(f"✅ Uploaded tab: {sheet_name} to Report Sheet")
