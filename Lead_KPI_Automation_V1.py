@@ -51,12 +51,13 @@ pdr_df.columns = pdr_df.columns.str.strip()
 
 
 def clean_for_gsheet(df):
-    """Ensure all values are JSON-safe for Google Sheets upload."""
+    """Remove or convert all values that Google Sheets API cannot handle."""
     return (
-        df.replace([np.inf, -np.inf, np.nan], "")  # remove invalid numbers
-          .fillna("")                              # fill None or NaT
-          .astype(str)                             # make all values JSON-safe strings
+        df.replace([np.inf, -np.inf, np.nan], "")  # remove invalid floats
+          .fillna("")                              # replace None/NaT
+          .astype(str)                             # force safe string encoding
     )
+
 
 # ==== 4) Helper Functions ====
 def clean_qai_id(x):
